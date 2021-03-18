@@ -215,7 +215,7 @@ module Reader = struct
   type 'error parse_state =
     | Done
     | Fail    of 'error
-    | Partial of (Bigstringaf.t -> off:int -> len:int -> AU.more -> (unit, 'error) result AU.state)
+    | Partial of ((Bigstringaf.t * int * int * AU.more), int) continuation
 
   type 'error t =
     { parser              : (unit, 'error) result Angstrom.t
@@ -305,56 +305,33 @@ module Reader = struct
   ;;
 
 
-  let transition t state =
-    match state with
-    | AU.Done(consumed, Ok ()) ->
-      t.parse_state <- Done;
-      consumed
-    | AU.Done(consumed, Error error) ->
-      t.parse_state <- Fail error;
-      consumed
-    | AU.Fail(consumed, marks, msg) ->
-      t.parse_state <- Fail (`Parse(marks, msg));
-      consumed
-    | AU.Partial { committed; continue } ->
-      t.parse_state <- Partial continue;
-      committed
-  and start t state =
-      match state with
-      | AU.Done _         -> failwith "httpaf.Parse.unable to start parser"
-      | AU.Fail(0, marks, msg) ->
-        t.parse_state <- Fail (`Parse(marks, msg))
-      | AU.Partial { committed = 0; continue } ->
-        t.parse_state <- Partial continue
-      | _ -> assert false
-  ;;
+  let is_closed t =
+    t.closed
 
-  let rec read_with_more t bs ~off ~len more =
-    let initial = match t.parse_state with Done -> true | _ -> false in
-    let consumed =
-      match t.parse_state with
-      | Fail _ -> 0
-      | Done   ->
-        start t (AU.parse t.parser);
-        read_with_more  t bs ~off ~len more;
-      | Partial continue ->
-        transition t (continue bs more ~off ~len)
-    in
-    (* Special case where the parser just started and was fed a zero-length
-     * bigstring. Avoid putting them parser in an error state in this scenario.
-     * If we were already in a `Partial` state, return the error. *)
-    if initial && len = 0 then t.parse_state <- Done;
-    match more with
-    | Complete ->
-      t.closed <- true;
-      consumed
-    | Incomplete ->
-      (match t.parse_state with
-       | Done when consumed < len ->
-         let off = off + consumed
-         and len = len - consumed in
-         consumed + read_with_more t bs ~off ~len more
-       | _ -> consumed)
+  let read_with_more t bs ~off ~len more =
+    (* Printf.printf "read_with_more: %S\n%!" (Bigstringaf.substring bs ~off ~len); *)
+    begin match more with
+    | Unbuffered.Complete -> t.closed <- true;
+    | Incomplete -> ()
+    end;
+    match t.parse_state with
+    | Partial k ->
+      continue k (bs, off, len, more)
+    | Fail _ -> 0
+    | Done   ->
+      match AU.parse t.parser ~init:(bs, off, len, more) with
+      | Done (committed, Ok ()) ->
+        t.parse_state <- Done;
+        committed
+      | Done (committed, Error error) ->
+        t.parse_state <- Fail error;
+        committed
+      | Fail (committed, marks, msg) ->
+        t.parse_state <- Fail (`Parse (marks, msg));
+        committed
+      | effect (AU.Read committed) k ->
+        t.parse_state <- Partial k;
+        committed
   ;;
 
   let force_close t =
