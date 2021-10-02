@@ -1,5 +1,5 @@
 (executables
- (libraries httpaf httpaf-eio httpaf_examples)
+ (libraries httpaf httpaf-eio eio_main httpaf_examples)
  (names eio_get eio_post eio_echo_post))
 
 (alias

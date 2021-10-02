@@ -140,39 +140,41 @@ module Client = struct
 
   let request ?(config=Config.default) ~sw socket request ~error_handler ~response_handler =
     let module Client_connection = Httpaf.Client_connection in
-    let request_body, connection =
-      Client_connection.request ~config request ~error_handler ~response_handler in
+    let t = Client_connection.create ~config in
+    let request_body =
+      Client_connection.request t request ~error_handler ~response_handler in
     let read_buffer = Buffer.create config.read_buffer_size in
     let rec read_loop () =
-      match Client_connection.next_read_operation connection with
+      match Client_connection.next_read_operation t with
       | `Read ->
         begin match read socket read_buffer with
           | `Eof ->
             let _ : int = Buffer.get read_buffer ~f:(fun { Cstruct.buffer = bigstring; off; len } ->
-                Client_connection.read_eof connection bigstring ~off ~len) in
+                Client_connection.read_eof t bigstring ~off ~len) in
             read_loop ()
           | `Ok _ ->
             let _ : int = Buffer.get read_buffer ~f:(fun { Cstruct.buffer = bigstring; off; len } ->
-                Client_connection.read connection bigstring ~off ~len) in
+                Client_connection.read t bigstring ~off ~len) in
             read_loop ()
         end
+      | `Yield -> print_endline "Yielding..."; () (* ? *)
       | `Close ->
         shutdown socket `Receive;
         raise Exit
     in
     let rec write_loop () =
-      match Client_connection.next_write_operation connection with
+      match Client_connection.next_write_operation t with
       | `Write io_vectors ->
         let result =
           match write socket io_vectors with
           | () -> `Ok (List.fold_left (fun acc f -> acc + f.Faraday.len) 0 io_vectors)
           | exception Unix.Unix_error (Unix.EPIPE, _, _) -> `Closed
         in
-        Client_connection.report_write_result connection result;
+        Client_connection.report_write_result t result;
         write_loop ()
       | `Yield ->
         let pause, resume = Promise.create () in
-        Client_connection.yield_writer connection (fun () -> Promise.fulfill resume ());
+        Client_connection.yield_writer t (fun () -> Promise.fulfill resume ());
         Promise.await pause;
         write_loop ()
       | `Close _ ->
@@ -187,7 +189,7 @@ module Client = struct
          | Exit -> Logs.info (fun f -> f "Read loop done")
          | ex ->
            Logs.warn (fun f -> f "Error reading from connection: %a" Fmt.exn ex);
-           Client_connection.report_exn connection ex
+           Client_connection.report_exn t ex
       );
     Fibre.fork_ignore ~sw
       (fun () ->
@@ -197,7 +199,7 @@ module Client = struct
          | Exit -> Logs.info (fun f -> f "Write loop done")
          | ex ->
            Logs.warn (fun f -> f "Error writing to connection: %a" Fmt.exn ex);
-           Client_connection.report_exn connection ex
+           Client_connection.report_exn t ex
       );
     request_body
 end

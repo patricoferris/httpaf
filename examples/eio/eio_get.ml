@@ -1,13 +1,18 @@
 module Arg = Caml.Arg
 
-open Fibreslib
+open Eio.Std
 open Httpaf
 open Httpaf_eio
 
 let main ~network port host =
   Switch.top @@ fun sw ->
   let addresses = Unix.getaddrinfo host (Int.to_string port) [Unix.(AI_FAMILY PF_INET)] in
-  let socket = Eio.Network.connect network (List.hd addresses).Unix.ai_addr in
+  let sockaddr =  
+    match (List.hd addresses).Unix.ai_addr with 
+      | ADDR_UNIX s -> `Unix s 
+      | ADDR_INET (i, p) -> `Tcp (i, p)
+  in
+  let socket = Eio.Net.connect ~sw network sockaddr in
   let finished, notify_finished = Promise.create () in
   let response_handler =
     Httpaf_examples.Client.print ~on_eof:(Promise.fulfill notify_finished)
@@ -36,6 +41,6 @@ let () =
     | None -> failwith "No hostname provided"
     | Some host -> host
   in
-  Eunix.run @@ fun env ->
+  Eio_main.run @@ fun env ->
   main !port host
-    ~network:(Eio.Stdenv.network env)
+    ~network:(Eio.Stdenv.net env)

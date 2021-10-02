@@ -80,7 +80,8 @@ let requests ~sw ~make_reqd handler =
       handler reqd;
       k reqd
     | `Fixed _ | `Chunked | `Close_delimited as encoding ->
-      let request_body = Body.create_reader Bigstringaf.empty in
+      (* patricoferris: If I use Body.empty then nothing gets written to the buffer is seems ? *)
+      let request_body = Body.create (Bigstringaf.create 0) Optional_thunk.none in
       let reqd = make_reqd request request_body in
       let request_done = Fibre.fork ~sw ~exn_turn_off:true (fun () -> handler reqd) in
       Parse.body ~encoding request_body >>= fun () ->
@@ -92,7 +93,7 @@ let handle ?(config=Config.default) ?(error_handler=default_error_handler)
     ~sw
     ~(read:int -> Angstrom.bigstring * int * int * Reader.AU.more)
     ~write
-    handler =
+    req_handler =
   let
     { Config
     . response_buffer_size
@@ -102,23 +103,22 @@ let handle ?(config=Config.default) ?(error_handler=default_error_handler)
   let writer = Writer.create ~buffer_size:response_buffer_size () in
   let response_body_buffer = Bigstringaf.create response_body_buffer_size in
   let make_reqd request request_body =
-    Reqd.create error_handler request request_body writer response_body_buffer
+    (* patricoferris: Not sure what the reader is used for... *)
+    Reqd.create error_handler request request_body (Obj.magic @@ (fun () -> assert false)) writer response_body_buffer
   in
   Fibre.fork_ignore ~sw (fun () -> Writer.run ~write writer);
-  let x = Angstrom.Unbuffered.parse ~read (requests ~sw ~make_reqd handler) in
+  let x = Angstrom.Unbuffered.parse ~read (requests ~sw ~make_reqd req_handler) in
   begin match Angstrom.Unbuffered.state_to_result x with
     | Ok (Ok ()) -> ()
     | Ok (Error (`Bad_request request)) ->
       error_handler ~request `Bad_request (fun headers ->
           Writer.write_response writer (Response.create ~headers `Bad_request);
-          Body.writer_of_faraday (Writer.faraday writer)
-            ~when_ready_to_write:(fun () -> Writer.wakeup writer))
+          Body.of_faraday (Writer.faraday writer) (Optional_thunk.some @@ fun () -> Writer.wakeup writer))
     | Error msg ->
       print_endline msg;
       error_handler `Bad_request (fun headers ->
           Writer.write_response writer (Response.create ~headers `Bad_request);
-          Body.writer_of_faraday (Writer.faraday writer)
-            ~when_ready_to_write:(fun () -> Writer.wakeup writer))
+          Body.of_faraday (Writer.faraday writer) (Optional_thunk.some @@ fun () -> Writer.wakeup writer))
   end;
   Writer.close writer;
   Writer.wakeup writer

@@ -1,6 +1,6 @@
 open Base
 open Httpaf
-open Fibreslib
+open Eio.Std
 module Format = Caml.Format
 
 let print_string = Stdio.(Out_channel.output_string stdout)
@@ -38,9 +38,9 @@ module Client = struct
 end
 
 module Server = struct
-  let echo_post { Gluten.reqd; _ } =
+  let echo_post reqd =
     match Reqd.request reqd  with
-    | { Request.meth = `POST; headers; _ } ->
+    | { Request.meth = `POST; headers; _ } -> begin
       let response =
         let content_type =
           match Headers.get headers "content-type" with
@@ -53,6 +53,7 @@ module Server = struct
       let response_body = Reqd.respond_with_streaming reqd response in
       let promise, resolver = Promise.create () in
       let rec on_read buffer ~off ~len =
+        Stdio.print_endline @@ Bigstringaf.to_string buffer;
         Body.write_bigstring response_body buffer ~off ~len;
         Body.schedule_read request_body ~on_eof ~on_read;
       and on_eof () =
@@ -61,9 +62,10 @@ module Server = struct
       in
       Body.schedule_read (Reqd.request_body reqd) ~on_eof ~on_read;
       Promise.await promise
+    end
     | _ ->
       let headers = Headers.of_list [ "connection", "close" ] in
-      Reqd.respond_with_string reqd (Response.create ~headers `Method_not_allowed) ""
+      Reqd.respond_with_string reqd (Response.create ~headers `Method_not_allowed) "Method not allowed"
   ;;
 
   let benchmark =

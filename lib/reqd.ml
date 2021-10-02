@@ -260,6 +260,14 @@ let input_state t : Input_state.t =
 
 let output_state t = Response_state.output_state t.response_state
 
+let is_complete t =
+  match input_state t with
+  | Wait | Ready    -> false
+  | Complete ->
+    (match output_state t with
+     | Waiting | Ready -> false
+     | Complete -> true)
+
 let flush_request_body t =
   let request_body = request_body t in
   if Body.has_pending_output request_body
